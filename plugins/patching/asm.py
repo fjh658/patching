@@ -3,9 +3,12 @@ import ida_idp
 import ida_nalt
 import ida_lines
 import ida_segregs
+import ida_ida
 
 from patching.util.ida import *
 import patching.keystone as keystone
+
+# https://docs.hex-rays.com/developer-guide/idapython/idapython-porting-guide-ida-9
 
 TEST_KS_RESOLVER = False
 
@@ -444,18 +447,18 @@ class AsmX86(KeystoneAssembler):
         'REPE CMPSW',
     ]
 
-    def __init__(self, inf):
+    def __init__(self):
         arch = keystone.KS_ARCH_X86
 
-        if inf.is_64bit():
+        # IDA 9: Use new accessors
+        if ida_ida.inf_is_64bit():
             mode = keystone.KS_MODE_64
             self.MAX_PREVIEW_BYTES = 7
-        elif inf.is_32bit():
+        elif ida_ida.inf_is_32bit_exactly():
             mode = keystone.KS_MODE_32
             self.MAX_PREVIEW_BYTES = 6
         else:
             mode = keystone.KS_MODE_16
-
         # initialize keystone-based assembler
         super(AsmX86, self).__init__(arch, mode)
 
@@ -644,13 +647,11 @@ class AsmARM(KeystoneAssembler):
         # TODO: MRS and MOV (32/64 bit) are semi-supported too
     ]
 
-    def __init__(self, inf):
-
-        # ARM64
-        if inf.is_64bit():
+    def __init__(self):
+        if ida_ida.inf_is_64bit():
             arch = keystone.KS_ARCH_ARM64
 
-            if inf.is_be():
+            if ida_ida.inf_is_be():
                 mode = keystone.KS_MODE_BIG_ENDIAN
             else:
                 mode = keystone.KS_MODE_LITTLE_ENDIAN
@@ -662,17 +663,17 @@ class AsmARM(KeystoneAssembler):
         else:
             arch = keystone.KS_ARCH_ARM
 
-            if inf.is_be():
+            if ida_ida.inf_is_be():
                 mode = keystone.KS_MODE_ARM | keystone.KS_MODE_BIG_ENDIAN
                 self._ks_thumb = keystone.Ks(arch, keystone.KS_MODE_THUMB | keystone.KS_MODE_BIG_ENDIAN)
             else:
                 mode = keystone.KS_MODE_ARM | keystone.KS_MODE_LITTLE_ENDIAN
                 self._ks_thumb = keystone.Ks(arch, keystone.KS_MODE_THUMB | keystone.KS_MODE_LITTLE_ENDIAN)
 
-        # initialize keystone-based assembler
+        # Initialize keystone-based assembler
         super(AsmARM, self).__init__(arch, mode)
 
-        # pre-assemble for later, repeated use
+        # Pre-assemble for later, repeated use
         self.__ARM_NOP_4, _ = self._ks.asm('NOP', as_bytes=True)
         if self._ks_thumb:
             self.__THUMB_NOP_2, _ = self._ks_thumb.asm('NOP', as_bytes=True)

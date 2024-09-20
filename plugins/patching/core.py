@@ -8,6 +8,7 @@ import ida_nalt
 import ida_bytes
 import ida_lines
 import ida_idaapi
+import ida_ida
 import ida_loader
 import ida_kernwin
 import ida_segment
@@ -20,6 +21,8 @@ from patching.exceptions import *
 from patching.util.ida import *
 from patching.util.misc import plugin_resource
 from patching.util.python import register_callback, notify_callback
+
+# https://docs.hex-rays.com/developer-guide/idapython/idapython-porting-guide-ida-9
 
 #------------------------------------------------------------------------------
 # Plugin Core
@@ -167,13 +170,15 @@ class PatchingCore(object):
         """
         Initialize the assembly engine to be used for patching.
         """
-        inf = ida_idaapi.get_inf_structure()
-        arch_name = inf.procname.lower()
-
+        arch_name = ida_ida.inf_get_procname().lower()
+        
         if arch_name == 'metapc':
-            assembler = AsmX86(inf)
+            assembler = AsmX86()
         elif arch_name.startswith('arm'):
-            assembler = AsmARM(inf)
+            assembler = AsmARM()
+        else:
+            assembler = None
+            print(" - Unsupported CPU: '%s' (%s)" % (arch_name, ida_nalt.get_input_file_path()))
 
         #
         # TODO: disabled until v0.2.0
@@ -187,10 +192,6 @@ class PatchingCore(object):
         #elif arch_name.startswith("systemz") or arch_name.startswith("s390x"):
         #    assembler = AsmSystemZ(inf)
         #
-
-        else:
-            assembler = None
-            print(" - Unsupported CPU: '%s' (%s)" % (arch_name, ida_nalt.get_input_file_path()))
 
         self.assembler = assembler
 
@@ -1213,8 +1214,7 @@ class PatchingCore(object):
 
         percent_truncated = percent[:percent.index('.')+3] # truncate! don't round this float...
 
-        inf = ida_idaapi.get_inf_structure()
-        arch_name = inf.procname.lower()
+        arch_name = ida_ida.inf_get_procname().lower()
 
         total_failed = total - good
         unknown_fails = total_failed - unsupported

@@ -10,12 +10,14 @@ import ida_name
 import ida_bytes
 import ida_lines
 import ida_idaapi
-import ida_struct
+import ida_typeinf
 import ida_kernwin
 import ida_segment
 
 from .qt import *
 from .python import swap_value
+
+# https://docs.hex-rays.com/developer-guide/idapython/idapython-porting-guide-ida-9
 
 #------------------------------------------------------------------------------
 # IDA Hooks
@@ -40,6 +42,39 @@ class IDBHooks(ida_idp.IDB_Hooks):
 #------------------------------------------------------------------------------
 # IDA Misc
 #------------------------------------------------------------------------------
+
+# Custom get_sptr function for IDA 9 compatibility
+# Replaces ida_struct.get_sptr
+def get_sptr(udm):
+    tif = udm.type
+    if tif.is_udt() and tif.is_struct():
+        return tif
+    else:
+        return None
+
+# Custom get_struct function for IDA 9 compatibility
+# Replaces ida_struct.get_struc
+def get_struct(struct_tid):
+    tif = ida_typeinf.tinfo_t()
+    if tif.get_type_by_tid(struct_tid):
+        if tif.is_struct():
+            return tif
+    return ida_idaapi.BADADDR
+
+# Custom get_member_by_name function for IDA 9 compatibility
+# Replaces ida_struct.get_member_by_name
+def get_member_by_name(tif, name):
+    if not tif.is_struct():
+        return None
+    
+    udt = ida_typeinf.udt_type_data_t()
+    if tif.get_udt_details(udt):
+        udm = ida_typeinf.udm_t()
+        udm.name = name
+        idx = tif.find_udm(udm, ida_typeinf.STRMEM_NAME)
+        if not idx == -1:
+            return udt[idx]
+    return None
 
 def is_reg_name(reg_name):
     """
@@ -339,7 +374,7 @@ def resolve_symbol(from_ea, name):
 
             # get the struct info for the resolved global address
             sid = ida_nalt.get_strid(global_ea)
-            sptr = ida_struct.get_struc(sid)
+            sptr = get_struct(sid)  # get_struct call for IDA 9 compatibility
 
             #
             # walk through the rest of the struct path to compute the offset (and
@@ -350,14 +385,15 @@ def resolve_symbol(from_ea, name):
             while struct_path and sptr != None:
 
                 member_name, sep, struct_path = struct_path.partition('.')
-                member = ida_struct.get_member_by_name(sptr, member_name)
+                member = get_member_by_name(sptr, member_name)  # get_member_by_name call for IDA 9 compatibility
 
                 if member is None:
                     print(" - INVALID STRUCT MEMBER!", member_name)
                     break
 
                 offset += member.get_soff()
-                sptr = ida_struct.get_sptr(member)
+                sptr = get_sptr(member)  # get_sptr call by passing 'member' for IDA 9 compatibility
+
                 if not sptr:
                     assert not('.' in struct_path), 'Expected end of struct path?'
                     yield (global_ea+offset, name)
