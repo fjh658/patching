@@ -5,7 +5,7 @@ import ida_idaapi
 import ida_kernwin
 
 from patching.util.qt import QT_AVAILABLE
-from patching.util.ida import parse_disassembly_components, scrape_symbols
+from patching.util.ida import parse_disassembly_components, scrape_symbols, focus_widget
 from patching.util.python import hexdump
 
 if QT_AVAILABLE:
@@ -18,6 +18,26 @@ class PatchingController(object):
     The backing logic & model (data) for the patch editing UI.
     """
     WINDOW_TITLE = "Patching"
+    _ACTIVE_INSTANCE = None
+
+    @classmethod
+    def get_active(cls):
+        inst = cls._ACTIVE_INSTANCE
+        if inst and (inst.view or not QT_AVAILABLE):
+            return inst
+        return None
+
+    @classmethod
+    def open(cls, core, ea):
+        """
+        Create (or reuse) the patching controller for the given address.
+        """
+        instance = cls.get_active()
+        if instance:
+            instance.select_address(ea)
+            instance.focus_view()
+            return instance
+        return cls(core, ea)
 
     def __init__(self, core, ea=ida_idaapi.BADADDR):
         self.core = core
@@ -52,6 +72,8 @@ class PatchingController(object):
         if QT_AVAILABLE:
             self.view = PatchingDockable(self)
             self.view.Show()
+
+        PatchingController._ACTIVE_INSTANCE = self
 
     #-------------------------------------------------------------------------
     # Actions
@@ -129,6 +151,24 @@ class PatchingController(object):
 
         # refresh lines
         self._refresh_lines()
+
+    def focus_view(self):
+        """
+        Focus the patching dialog if it is open.
+        """
+        if self.view:
+            self.view.focus()
+        else:
+            focus_widget(title=self.WINDOW_TITLE)
+
+    def on_view_closed(self):
+        """
+        Cleanup when the patching dialog is closed.
+        """
+        if self.view:
+            self.view = None
+        if PatchingController._ACTIVE_INSTANCE is self:
+            PatchingController._ACTIVE_INSTANCE = None
 
     def _update_assembly_text(self, assembly_text):
         """

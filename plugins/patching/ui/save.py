@@ -95,7 +95,10 @@ class SaveController(object):
         """
         if not self.view:
             return False
-        return self.view.exec_()
+        exec_fn = getattr(self.view, 'exec', None)
+        if not exec_fn:
+            exec_fn = getattr(self.view, 'exec_', None)
+        return exec_fn()
 
     def attempt_patch(self, target_filepath, clean):
         """

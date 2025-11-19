@@ -1,27 +1,97 @@
-#
-# this global is used to indicate whether Qt bindings for python are present
-# and whether the plugin should expect to be using UI features
-#
+"""
+Qt compatibility helpers shared across the plugin.
+"""
 
 QT_AVAILABLE = False
+QT_LIB = None         # Qt major version (5/6)
+QT_BINDING = None     # PyQt5 / PyQt6 / PySide6 / ...
 
-# attempt to load PyQt5
-try:
-    import PyQt5.QtGui as QtGui
-    import PyQt5.QtCore as QtCore
-    import PyQt5.QtWidgets as QtWidgets
-    from PyQt5 import sip
+QtCore = None
+QtGui = None
+QtWidgets = None
 
-    # importing PyQt5 went okay, let's see if we're in an IDA Qt context
+qt_wrapinstance = None
+
+def _init_pyqt5():
+    global QtCore, QtGui, QtWidgets, QT_LIB, QT_BINDING, qt_wrapinstance
+    from PyQt5 import QtCore as _QtCore
+    from PyQt5 import QtGui as _QtGui
+    from PyQt5 import QtWidgets as _QtWidgets
+    from PyQt5 import sip as _sip
+    QtCore, QtGui, QtWidgets = _QtCore, _QtGui, _QtWidgets
+    QT_LIB = 5
+    QT_BINDING = 'PyQt5'
+    qt_wrapinstance = lambda ptr, cls: _sip.wrapinstance(int(ptr), cls)
+
+def _init_pyqt6():
+    global QtCore, QtGui, QtWidgets, QT_LIB, QT_BINDING, qt_wrapinstance
+    from PyQt6 import QtCore as _QtCore
+    from PyQt6 import QtGui as _QtGui
+    from PyQt6 import QtWidgets as _QtWidgets
     try:
-        import ida_kernwin
-        QT_AVAILABLE = ida_kernwin.is_idaq()
+        from PyQt6 import sip as _sip
     except ImportError:
-        pass
+        import sip as _sip
+    QtCore, QtGui, QtWidgets = _QtCore, _QtGui, _QtWidgets
+    QT_LIB = 6
+    QT_BINDING = 'PyQt6'
+    qt_wrapinstance = lambda ptr, cls: _sip.wrapinstance(int(ptr), cls)
 
-# import failed, PyQt5 is not available
-except ImportError:
-    pass
+def _init_pyside6():
+    global QtCore, QtGui, QtWidgets, QT_LIB, QT_BINDING, qt_wrapinstance
+    from PySide6 import QtCore as _QtCore
+    from PySide6 import QtGui as _QtGui
+    from PySide6 import QtWidgets as _QtWidgets
+    from shiboken6 import wrapInstance as _wrapInstance
+    QtCore, QtGui, QtWidgets = _QtCore, _QtGui, _QtWidgets
+    QT_LIB = 6
+    QT_BINDING = 'PySide6'
+    qt_wrapinstance = lambda ptr, cls: _wrapInstance(int(ptr), cls)
+
+# attempt to load PyQt5 first (for older IDA), then PyQt6, then PySide6 (IDA 9.2)
+for initializer in (_init_pyqt5, _init_pyqt6, _init_pyside6):
+    if QT_BINDING:
+        break
+    try:
+        initializer()
+    except ImportError:
+        continue
+    except Exception:
+        continue
+
+QT_AVAILABLE = bool(QT_BINDING)
+
+#--------------------------------------------------------------------------
+# PyQt Compatibility
+#--------------------------------------------------------------------------
+
+def _alias(namespace, name, value):
+    if namespace and not hasattr(namespace, name):
+        setattr(namespace, name, value)
+
+if QT_AVAILABLE and QT_LIB == 6:
+    # Alignments
+    _alias(QtCore.Qt, 'AlignRight', QtCore.Qt.AlignmentFlag.AlignRight)
+    _alias(QtCore.Qt, 'AlignVCenter', QtCore.Qt.AlignmentFlag.AlignVCenter)
+    _alias(QtCore.Qt, 'AlignTop', QtCore.Qt.AlignmentFlag.AlignTop)
+    _alias(QtCore.Qt, 'AlignHCenter', QtCore.Qt.AlignmentFlag.AlignHCenter)
+
+    # Window flags
+    _alias(QtCore.Qt, 'WindowSystemMenuHint', QtCore.Qt.WindowType.WindowSystemMenuHint)
+    _alias(QtCore.Qt, 'WindowContextHelpButtonHint', QtCore.Qt.WindowType.WindowContextHelpButtonHint)
+    _alias(QtCore.Qt, 'MSWindowsFixedSizeDialogHint', QtCore.Qt.WindowType.MSWindowsFixedSizeDialogHint)
+
+    # Keyboard constants
+    _alias(QtCore.Qt, 'Key_Down', QtCore.Qt.Key.Key_Down)
+    _alias(QtCore.Qt, 'Key_Up', QtCore.Qt.Key.Key_Up)
+
+    # QEvent types
+    if hasattr(QtCore, 'QEvent') and hasattr(QtCore.QEvent, 'Type'):
+        _alias(QtCore.QEvent, 'Polish', QtCore.QEvent.Type.Polish)
+
+    # QFont style hints
+    if hasattr(QtGui, 'QFont') and hasattr(QtGui.QFont, 'StyleHint'):
+        _alias(QtGui.QFont, 'Monospace', QtGui.QFont.StyleHint.Monospace)
 
 #--------------------------------------------------------------------------
 # Qt Misc Helpers

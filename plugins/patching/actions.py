@@ -120,11 +120,11 @@ class AssembleAction(ida_kernwin.action_handler_t):
 
     def activate(self, ctx):
 
-        # do not create a new patching dialog if one is already active
-        if ida_kernwin.find_widget(PatchingController.WINDOW_TITLE):
-            return 1
+        target_ea = get_current_ea(ctx)
+        if target_ea == ida_idaapi.BADADDR:
+            target_ea = ida_kernwin.get_screen_ea()
 
-        wid = PatchingController(self.core, get_current_ea(ctx))
+        PatchingController.open(self.core, target_ea)
 
         # return 1 to refresh the IDA views
         return 1

@@ -16,6 +16,11 @@ class PatchingDockable(ida_kernwin.PluginForm):
         super().__init__()
         self.controller = controller
         self.count = 0
+        self._show_flags = (
+            ida_kernwin.PluginForm.WOPN_DP_FLOATING |
+            ida_kernwin.PluginForm.WOPN_CENTERED |
+            ida_kernwin.PluginForm.WOPN_RESTORE
+        )
 
     #--------------------------------------------------------------------------
     # IDA PluginForm Overloads
@@ -23,10 +28,29 @@ class PatchingDockable(ida_kernwin.PluginForm):
 
     def Show(self):
 
-        # TODO/Hex-Rays/XXX: can't make window Floating? using plgform_show(...) instead
-        flags = ida_kernwin.PluginForm.WOPN_DP_FLOATING | ida_kernwin.PluginForm.WOPN_CENTERED
-        #super(PatchingDockable, self).Show(self.controller.WINDOW_TITLE, flags)
-        ida_kernwin.plgform_show(self.__clink__, self, self.controller.WINDOW_TITLE, flags)
+        flags = self._show_flags
+        shown = False
+
+        # prefer plgform_show so we can fully control the widget options
+        pf_show = getattr(ida_kernwin, 'plgform_show', None)
+        clink = getattr(self, '__clink__', None)
+        if pf_show and clink:
+            try:
+                shown = pf_show(clink, self, self.controller.WINDOW_TITLE, flags)
+            except Exception:
+                shown = False
+
+        # fall back to the default PluginForm.Show implementation if needed
+        if not shown:
+            try:
+                shown = super(PatchingDockable, self).Show(self.controller.WINDOW_TITLE, flags)
+            except Exception:
+                shown = False
+
+        if not shown:
+            return False
+
+        self._apply_display_flags()
         self._center_dialog()
 
         #
@@ -40,17 +64,19 @@ class PatchingDockable(ida_kernwin.PluginForm):
 
         # set the initial keyboard focus the editable assembly line
         self._line_assembly.setFocus(QtCore.Qt.FocusReason.ActiveWindowFocusReason)
+        return True
 
     def OnCreate(self, form):
         self._twidget = form
         self.widget = ida_kernwin.PluginForm.TWidgetToPyQtWidget(self._twidget)
         self._ui_init()
+        self._apply_display_flags()
 
     def OnClose(self, form):
         self._edit_timer.stop()
         self._edit_timer = None
         self._code_view = None
-        self.controller.view = None
+        self.controller.on_view_closed()
         return super().OnClose(form)
 
     #--------------------------------------------------------------------------
@@ -198,6 +224,35 @@ class PatchingDockable(ida_kernwin.PluginForm):
 
         pos_dialog = rect_main.center() - rect_dialog.center()
         wid_dialog.move(pos_dialog)
+        return True
+
+    def focus(self):
+        """
+        Bring the patching dialog to the foreground if possible.
+        """
+        widget = getattr(self, '_twidget', None)
+        if not widget:
+            widget = ida_kernwin.find_widget(self.controller.WINDOW_TITLE)
+        if not widget:
+            return False
+
+        return focus_widget(widget, self.controller.WINDOW_TITLE, "IDA View-A")
+
+
+    def _apply_display_flags(self):
+        """
+        Ensure the widget obeys the preferred display flags (floating + centered).
+        """
+        if not hasattr(self, '_twidget') or not self._twidget:
+            return False
+        display_widget = getattr(ida_kernwin, 'display_widget', None)
+        if not display_widget:
+            return False
+        try:
+            display_widget(self._twidget, self._show_flags)
+        except Exception:
+            return False
+        return True
 
     #--------------------------------------------------------------------------
     # Refresh
