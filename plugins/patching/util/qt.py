@@ -59,7 +59,14 @@ for initializer in (_init_pyqt5, _init_pyqt6, _init_pyside6):
     except Exception:
         continue
 
-QT_AVAILABLE = bool(QT_BINDING)
+if QT_BINDING:
+    try:
+        import ida_kernwin
+        QT_AVAILABLE = ida_kernwin.is_idaq()
+    except Exception:
+        QT_AVAILABLE = False
+else:
+    QT_AVAILABLE = False
 
 #--------------------------------------------------------------------------
 # PyQt Compatibility

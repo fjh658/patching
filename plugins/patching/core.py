@@ -1,3 +1,6 @@
+import os
+import sys
+import inspect
 import shutil
 import hashlib
 import collections
@@ -20,6 +23,31 @@ from patching.exceptions import *
 from patching.util.ida import *
 from patching.util.misc import plugin_resource
 from patching.util.python import register_callback, notify_callback
+
+def _debug_enabled():
+    """
+    Debug logging switch. Defaults to disabled.
+    """
+    try:
+        scope = sys.modules.get('__main__')
+        if scope is not None and hasattr(scope, 'PATCHING_DEBUG'):
+            return bool(getattr(scope, 'PATCHING_DEBUG'))
+    except Exception:
+        pass
+
+    return os.environ.get('PATCHING_DEBUG', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+def _dbg(event, **fields):
+    """
+    Emit lightweight debug diagnostics to the IDA console.
+    """
+    if not _debug_enabled():
+        return
+
+    parts = [f"pid={os.getpid()}", f"event={event}", f"file={__file__}"]
+    for key in sorted(fields):
+        parts.append(f"{key}={fields[key]}")
+    print("[PatchingDBG] " + " ".join(parts))
 
 #------------------------------------------------------------------------------
 # Plugin Core
@@ -81,6 +109,29 @@ class PatchingCore(object):
         # plugin events / callbacks
         self._patches_changed_callbacks = []
         self._refresh_timer = None
+        self._loaded = False
+        self._loading = False
+        self._load_attempts = 0
+        self._process_lock_key = None
+        self._process_lock_owner = None
+
+        caller = "unknown"
+        main_id = "None"
+        try:
+            frame = inspect.stack()[1]
+            caller = f"{frame.filename}:{frame.lineno}:{frame.function}"
+            main_id = hex(id(sys.modules.get('__main__')))
+        except Exception:
+            pass
+
+        _dbg(
+            "core.init",
+            core_id=hex(id(self)),
+            defer_load=defer_load,
+            input_path=ida_nalt.get_input_file_path(),
+            caller=caller,
+            main_id=main_id
+        )
 
         #
         # defer fully loading the plugin core until the IDB and UI itself
@@ -107,40 +158,125 @@ class PatchingCore(object):
         """
         Load the plugin core.
         """
+        self._load_attempts += 1
+        input_path = ida_nalt.get_input_file_path() or "<no-input>"
+        lock_hash = hashlib.sha1(input_path.encode('utf-8', errors='ignore')).hexdigest()[:16]
+        lock_key = f"_PATCHING_CORE_LOAD_LOCK_{os.getpid()}_{lock_hash}"
+        lock_owner = os.environ.get(lock_key)
+        self_id = hex(id(self))
 
-        # attempt to initialize an assembler engine matching the database
-        self._init_assembler()
+        _dbg(
+            "core.load.enter",
+            core_id=hex(id(self)),
+            attempt=self._load_attempts,
+            loaded=self._loaded,
+            loading=self._loading,
+            input_path=input_path,
+            lock_key=lock_key,
+            lock_owner=lock_owner if lock_owner is not None else "None"
+        )
 
-        # deactivate the plugin if this is an unsupported architecture
-        if not self.assembler:
-            self._ui_hooks.unhook()
+        if self._loaded or self._loading:
+            _dbg(
+                "core.load.skip",
+                core_id=hex(id(self)),
+                attempt=self._load_attempts,
+                loaded=self._loaded,
+                loading=self._loading
+            )
             return
 
-        # enable additional hooks since the plugin is going live
-        self._ui_hooks.populating_widget_popup = self._populating_widget_popup
-        self._ui_hooks.get_lines_rendering_info = self._highlight_lines
+        if lock_owner is not None and lock_owner != self_id:
+            self._idb_hooks.unhook()
+            self._idp_hooks.unhook()
+            self._ui_hooks.unhook()
+            _dbg(
+                "core.load.skip.process_lock",
+                core_id=self_id,
+                attempt=self._load_attempts,
+                lock_key=lock_key,
+                lock_owner=lock_owner,
+                hooks_unhooked=True
+            )
+            return
 
-        # finish loading the plugin and integrating its UI elements / actions
-        self._init_actions()
-        self._idp_hooks.hook()
-        self._refresh_patches()
+        os.environ[lock_key] = self_id
+        self._process_lock_key = lock_key
+        self._process_lock_owner = self_id
+        _dbg(
+            "core.load.lock_acquired",
+            core_id=self_id,
+            lock_key=lock_key
+        )
 
-        print("[%s] Loaded v%s - (c) %s - %s" % (self.PLUGIN_NAME, self.PLUGIN_VERSION, self.PLUGIN_AUTHORS, self.PLUGIN_DATE))
+        self._loading = True
 
-        # parse / handle command line options for this plugin (DEV)
-        self._run_cli_options()
+        try:
+            # attempt to initialize an assembler engine matching the database
+            self._init_assembler()
+
+            # deactivate the plugin if this is an unsupported architecture
+            if not self.assembler:
+                self._ui_hooks.unhook()
+                _dbg("core.load.unsupported_arch", core_id=hex(id(self)))
+                return
+
+            # enable additional hooks since the plugin is going live
+            self._ui_hooks.populating_widget_popup = self._populating_widget_popup
+            self._ui_hooks.get_lines_rendering_info = self._highlight_lines
+
+            # finish loading the plugin and integrating its UI elements / actions
+            self._init_actions()
+            self._idp_hooks.hook()
+            self._refresh_patches()
+            self._loaded = True
+
+            print("[%s] Loaded v%s - (c) %s - %s" % (self.PLUGIN_NAME, self.PLUGIN_VERSION, self.PLUGIN_AUTHORS, self.PLUGIN_DATE))
+            _dbg(
+                "core.load.done",
+                core_id=hex(id(self)),
+                attempt=self._load_attempts,
+                loaded=self._loaded,
+                input_path=input_path,
+                proc=ida_ida.inf_get_procname()
+            )
+
+            # parse / handle command line options for this plugin (DEV)
+            self._run_cli_options()
+        finally:
+            self._loading = False
+            if not self._loaded and self._process_lock_key:
+                if os.environ.get(self._process_lock_key) == self._process_lock_owner:
+                    try:
+                        del os.environ[self._process_lock_key]
+                        _dbg(
+                            "core.load.lock_released",
+                            core_id=hex(id(self)),
+                            lock_key=self._process_lock_key
+                        )
+                    except Exception:
+                        pass
+                self._process_lock_key = None
+                self._process_lock_owner = None
+            _dbg(
+                "core.load.finally",
+                core_id=hex(id(self)),
+                attempt=self._load_attempts,
+                loaded=self._loaded,
+                loading=self._loading
+            )
 
     def unload(self):
         """
         Unload the plugin core.
         """
-        self._idb_hooks.unhook()
-
-        if not self.assembler:
-            return
-
-        print("[%s] Unloading v%s..." % (self.PLUGIN_NAME, self.PLUGIN_VERSION))
-
+        _dbg(
+            "core.unload.enter",
+            core_id=hex(id(self)),
+            loaded=self._loaded,
+            loading=self._loading,
+            assembler=bool(self.assembler)
+        )
         if self._refresh_timer:
             ida_kernwin.unregister_timer(self._refresh_timer)
             self._refresh_timer = None
@@ -148,8 +284,47 @@ class PatchingCore(object):
         self._idb_hooks.unhook()
         self._idp_hooks.unhook()
         self._ui_hooks.unhook()
+
+        # Allow teardown even if load() failed before assembler initialization.
+        if not self.assembler:
+            self._loaded = False
+            self._loading = False
+            if self._process_lock_key and os.environ.get(self._process_lock_key) == self._process_lock_owner:
+                try:
+                    del os.environ[self._process_lock_key]
+                    _dbg(
+                        "core.unload.lock_released",
+                        core_id=hex(id(self)),
+                        lock_key=self._process_lock_key
+                    )
+                except Exception:
+                    pass
+            self._process_lock_key = None
+            self._process_lock_owner = None
+            _dbg("core.unload.no_assembler", core_id=hex(id(self)))
+            _dbg("core.unload.exit", core_id=hex(id(self)))
+            return
+
+        print("[%s] Unloading v%s..." % (self.PLUGIN_NAME, self.PLUGIN_VERSION))
+
+        # Loaded path teardown.
         self._unregister_actions()
         self._unload_assembler()
+        self._loaded = False
+        self._loading = False
+        if self._process_lock_key and os.environ.get(self._process_lock_key) == self._process_lock_owner:
+            try:
+                del os.environ[self._process_lock_key]
+                _dbg(
+                    "core.unload.lock_released",
+                    core_id=hex(id(self)),
+                    lock_key=self._process_lock_key
+                )
+            except Exception:
+                pass
+        self._process_lock_key = None
+        self._process_lock_owner = None
+        _dbg("core.unload.exit", core_id=hex(id(self)))
 
     def _init_assembler(self):
         """
@@ -225,7 +400,10 @@ class PatchingCore(object):
             )
 
             if not ida_kernwin.register_action(desc):
-                print("Failed to register action '%s'" % action.NAME)
+                ida_kernwin.unregister_action(action.NAME)
+                if not ida_kernwin.register_action(desc):
+                    print("Failed to register action '%s'" % action.NAME)
+                    _dbg("core.action.register_fail", core_id=hex(id(self)), action=action.NAME)
 
         # inject plugin's NOP action into IDA's edit submenu
         ida_kernwin.attach_action_to_menu("Edit/Patch program/Change byte...", "patching:nop", ida_kernwin.SETMENU_INS)
